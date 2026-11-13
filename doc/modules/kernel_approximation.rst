@@ -228,6 +228,7 @@ learning algorithms using this kernel to account for interactions between featur
 
 The TensorSketch [PP2013]_ method, as implemented in :class:`PolynomialCountSketch`, is a
 scalable, input data independent method for polynomial kernel approximation.
+
 It is based on the concept of Count sketch [WIKICS]_ [CCF2002]_ , a dimensionality
 reduction technique similar to feature hashing, which instead uses several
 independent hash functions. TensorSketch obtains a Count Sketch of the outer product
@@ -236,6 +237,12 @@ polynomial kernel feature space. In particular, instead of explicitly computing
 the outer product, TensorSketch computes the Count Sketch of the vectors and then
 uses polynomial multiplication via the Fast Fourier Transform to compute the
 Count Sketch of their outer product.
+
+The transformer processes one degree's count sketch at a time and accumulates its
+real Fourier transform. Its sketch and Fourier workspace therefore scales with
+``n_samples * n_components``, independently of ``degree``. Sparse inputs are
+accumulated from their nonzero entries, without converting every input column to
+a dense array. The fitted hash arrays still scale with ``degree * n_features``.
 
 Conveniently, the training phase of TensorSketch simply consists of initializing
 some random variables. It is thus independent of the input data, i.e. it only

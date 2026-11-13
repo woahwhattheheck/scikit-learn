@@ -8,7 +8,7 @@ from numbers import Integral, Real
 
 import numpy as np
 import scipy.sparse as sp
-from scipy.fft import fft, ifft
+from scipy.fft import irfft, rfft
 
 from sklearn.base import (
     BaseEstimator,
@@ -214,31 +214,42 @@ class PolynomialCountSketch(
                 " match that of training samples."
             )
 
-        count_sketches = np.zeros((X_gamma.shape[0], self.degree, self.n_components))
+        sparse = sp.issparse(X_gamma)
+        if sparse:
+            # Scaling above makes an independent sparse matrix. Canonicalize
+            # duplicate entries before accumulating hash collisions, matching
+            # the per-column dense sum without changing the caller's input.
+            X_gamma.sum_duplicates()
+            X_gamma = X_gamma.tocoo(copy=False)
 
-        if sp.issparse(X_gamma):
-            for j in range(X_gamma.shape[1]):
-                for d in range(self.degree):
-                    iHashIndex = self.indexHash_[d, j]
-                    iHashBit = self.bitHash_[d, j]
-                    count_sketches[:, d, iHashIndex] += (
-                        (iHashBit * X_gamma[:, [j]]).toarray().ravel()
+        # Only one degree's sketch is needed at a time. Multiplication in the
+        # Fourier domain computes the circular convolution of these sketches.
+        # Keeping the running product avoids a samples x degree x components
+        # allocation, and the real FFT stores only the nonredundant frequencies.
+        count_sketch = np.zeros((X_gamma.shape[0], self.n_components))
+        for d in range(self.degree):
+            count_sketch.fill(0)
+            if sparse:
+                np.add.at(
+                    count_sketch,
+                    (X_gamma.row, self.indexHash_[d, X_gamma.col]),
+                    self.bitHash_[d, X_gamma.col] * X_gamma.data,
+                )
+            else:
+                for j in range(X_gamma.shape[1]):
+                    count_sketch[:, self.indexHash_[d, j]] += (
+                        self.bitHash_[d, j] * X_gamma[:, j]
                     )
 
-        else:
-            for j in range(X_gamma.shape[1]):
-                for d in range(self.degree):
-                    iHashIndex = self.indexHash_[d, j]
-                    iHashBit = self.bitHash_[d, j]
-                    count_sketches[:, d, iHashIndex] += iHashBit * X_gamma[:, j]
+            sketch_fft = rfft(count_sketch, axis=1)
+            if d == 0:
+                sketch_fft_prod = sketch_fft
+            else:
+                sketch_fft_prod *= sketch_fft
+            del sketch_fft
 
-        # For each same, compute a count sketch of phi(x) using the polynomial
-        # multiplication (via FFT) of p count sketches of x.
-        count_sketches_fft = fft(count_sketches, axis=2, overwrite_x=True)
-        count_sketches_fft_prod = np.prod(count_sketches_fft, axis=1)
-        data_sketch = np.real(ifft(count_sketches_fft_prod, overwrite_x=True))
-
-        return data_sketch
+        del count_sketch
+        return irfft(sketch_fft_prod, n=self.n_components, axis=1, overwrite_x=True)
 
     def __sklearn_tags__(self):
         tags = super().__sklearn_tags__()

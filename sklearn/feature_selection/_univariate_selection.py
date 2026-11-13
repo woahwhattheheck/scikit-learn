@@ -87,18 +87,34 @@ def f_oneway(*args):
 
     .. [2] Heiman, G.W.  Research Methods in Statistics. 2002.
     """
-    n_classes = len(args)
-    args = [as_float_array(a) for a in args]
-    n_samples_per_class = np.array([a.shape[0] for a in args])
-    n_samples = np.sum(n_samples_per_class)
-    ss_alldata = sum(safe_sqr(a).sum(axis=0) for a in args)
-    sums_args = [np.asarray(a.sum(axis=0)) for a in args]
-    square_of_sums_alldata = sum(sums_args) ** 2
-    square_of_sums_args = [s**2 for s in sums_args]
-    sstot = ss_alldata - square_of_sums_alldata / float(n_samples)
+    return _f_oneway_from_groups(args)
+
+
+def _f_oneway_from_groups(groups, *, copy=True):
+    """Compute ANOVA from one group at a time.
+
+    groups may be an iterator, so callers do not need to retain all class
+    subsets. Each group's buffer is squared in place after computing its sum.
+    Set copy=False only when the iterator yields private, writable buffers.
+    """
+    n_classes = 0
+    n_samples = 0
+    ss_alldata = 0.0
+    sums_alldata = 0.0
     ssbn = 0.0
-    for k, _ in enumerate(args):
-        ssbn += square_of_sums_args[k] / n_samples_per_class[k]
+    for group in groups:
+        group = as_float_array(group, copy=copy)
+        n_samples_in_group = np.intp(group.shape[0])
+        n_samples += n_samples_in_group
+        n_classes += 1
+        group_sum = np.asarray(group.sum(axis=0))
+        sums_alldata = sums_alldata + group_sum
+        ssbn += group_sum**2 / n_samples_in_group
+        ss_alldata = ss_alldata + safe_sqr(group, copy=False).sum(axis=0)
+        # Release the current subset before asking the iterator for the next.
+        del group
+    square_of_sums_alldata = sums_alldata**2
+    sstot = ss_alldata - square_of_sums_alldata / float(n_samples)
     ssbn -= square_of_sums_alldata / float(n_samples)
     sswn = sstot - ssbn
     dfbn = n_classes - 1
@@ -167,8 +183,10 @@ def f_classif(X, y):
            3.87e-01, 7.66e-01])
     """
     X, y = check_X_y(X, y, accept_sparse=["csr", "csc", "coo"])
-    args = [X[safe_mask(X, y == k)] for k in np.unique(y)]
-    return f_oneway(*args)
+    # Boolean/fancy indexing yields independent buffers. Consume them one at a
+    # time and reuse each buffer for the sum of squares.
+    groups = (X[safe_mask(X, y == k)] for k in np.unique(y))
+    return _f_oneway_from_groups(groups, copy=False)
 
 
 def _chisquare(f_obs, f_exp):

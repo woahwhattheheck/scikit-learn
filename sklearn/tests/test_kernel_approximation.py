@@ -2,6 +2,7 @@ import re
 
 import numpy as np
 import pytest
+from scipy import sparse
 
 from sklearn._config import config_context
 from sklearn.datasets import make_classification
@@ -97,6 +98,47 @@ def test_polynomial_count_sketch_dense_sparse(gamma, degree, coef0, csr_containe
 
     assert_allclose(Xt_dense, Xt_sparse)
     assert_allclose(Yt_dense, Yt_sparse)
+
+
+@pytest.mark.parametrize("n_components", [1, 7, 8])
+def test_polynomial_count_sketch_circular_convolution(n_components):
+    """Streaming real FFTs preserve circular convolution for odd sizes."""
+    X = np.array([[0.5, -1.0, 0.0], [0.0, 0.25, 1.0]])
+    sketch = PolynomialCountSketch(
+        degree=3, n_components=n_components, gamma=0.25, coef0=1, random_state=42
+    ).fit(X)
+    augmented = np.hstack([0.5 * X, np.ones((len(X), 1))])
+    expected = np.zeros((len(X), n_components))
+    expected[:, 0] = 1
+    for indices, signs in zip(sketch.indexHash_, sketch.bitHash_):
+        factor = np.zeros_like(expected)
+        for j, (index, sign) in enumerate(zip(indices, signs)):
+            factor[:, index] += sign * augmented[:, j]
+        expected = sum(
+            factor[:, shift, None] * np.roll(expected, shift, axis=1)
+            for shift in range(n_components)
+        )
+    assert_allclose(sketch.transform(X), expected, atol=1e-14)
+
+
+def test_polynomial_count_sketch_sparse_duplicates_preserve_input():
+    """Hash accumulation sums repeated sparse entries without mutating the input."""
+    X = sparse.csc_matrix(
+        (
+            np.array([0.25, 0.5, 1.0, -0.5, 0.0], dtype=np.float32),
+            np.array([0, 0, 1, 1, 0]),
+            np.array([0, 2, 4, 5]),
+        ),
+        shape=(2, 3),
+    )
+    original = X.copy()
+    sketch = PolynomialCountSketch(
+        degree=4, n_components=7, gamma=0.5, coef0=0.25, random_state=42
+    ).fit(X)
+    assert_allclose(sketch.transform(X), sketch.transform(X.toarray()), atol=1e-7)
+    assert_array_equal(X.data, original.data)
+    assert_array_equal(X.indices, original.indices)
+    assert_array_equal(X.indptr, original.indptr)
 
 
 def _linear_kernel(x, y):
